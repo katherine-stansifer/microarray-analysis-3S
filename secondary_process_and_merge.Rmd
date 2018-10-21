@@ -1,0 +1,194 @@
+---
+title: "secondary_process_and_merge"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(limma)
+library(tidyverse)
+library(affy)
+library(magrittr)
+```
+
+## Process and merge data
+
+For all 3 datasets
+
+```{r processing}
+
+# GSE54088 (sync): map to gene names 
+## Join entrez IDs and rma results
+load("results/basic_proc.RData")
+rma_scratch <- as.data.frame(exprs(GSE54408_rma)) %>% rownames_to_column("probe_name")
+en_scratch <- as.data.frame(en_GSE54408) %>% rownames_to_column("probe_name") %>% rename(entrez=en_GSE54408)
+GSE54408_joined <- left_join(rma_scratch,en_scratch) %>% filter(!is.na(entrez))
+## Get gene values (by calculating the median)
+GSE54408_geneVals <- GSE54408_joined %>% group_by(entrez) %>% select(-probe_name) %>% 
+  summarize_all(funs(median(., na.rm = TRUE))) %>% arrange(entrez)
+save(GSE54408_geneVals,file="results/GSE54408_geneVals.RData")
+
+## Convert into expression set
+GSE54408_geneVals_eset <- new("ExpressionSet")
+exprs(GSE54408_geneVals_eset) <- as.matrix(GSE54408_geneVals %>% column_to_rownames("entrez"))
+## Use limma to get expression values for each condition
+treatments_table <- read_csv("data/GSE54408.csv", col_types="ccc")
+timepoints <- factor(treatments_table[['days']])
+strains <- factor(treatments_table[['strain']])
+design <- model.matrix(~0+timepoints+strains)
+GSE54408_fit <- lmFit(GSE54408_geneVals_eset,design)
+GSE54408_fit2 <- eBayes(GSE54408_fit)
+# Convert coefficients to zscores and save
+to_norm_all <- GSE54408_fit2$coefficients[,1:8]
+GSE54408_zscores_all <- (to_norm_all-mean(to_norm_all))/sd(to_norm_all)
+to_norm_selected <- GSE54408_fit2$coefficients[,c(1,4,5,6,7,8)]
+GSE54408_zscores_selected <- (to_norm_selected-mean(to_norm_selected))/sd(to_norm_selected)
+contrast_strings <- sapply(levels(timepoints)[2:length(levels(timepoints))],
+                           function(tp) {paste0("timepoints",tp,"-timepoints0")})
+timepoint_strings <- sapply(levels(timepoints), function(tp) {paste0("timepoints",tp)})
+contrast.matrix<-makeContrasts(contrasts=contrast_strings, levels=design)
+GSE54408_fitContrasts<-contrasts.fit(GSE54408_fit,contrast.matrix)
+GSE54408_fitContrasts2<-eBayes(GSE54408_fitContrasts)
+save(GSE54408_fitContrasts2,file="results/GSE54408_fitContrasts2.RData")
+save(GSE54408_zscores_all,file="results/GSE54408_zscores_all.RData")
+save(GSE54408_zscores_selected,file="results/GSE54408_zscores_selected.RData")
+
+
+# GSE12769
+rma_scratch <- as.data.frame(exprs(GSE12769_rma)) %>% rownames_to_column("probe_name") %>% gather(dataset,rma,2:21)
+pma_scratch <- as.data.frame(GSE12769_pma) %>% rownames_to_column("probe_name") %>% gather(dataset,pma,2:21)
+en_scratch <- as.data.frame(en_GSE12769) %>% rownames_to_column("probe_name") %>% rename(entrez=en_GSE12769) 
+GSE12769_joined <- left_join(rma_scratch,pma_scratch) %>% left_join(en_scratch) 
+
+# Summarize filtering for non-absent 
+GSE12769_geneVals_filt <- GSE12769_joined %>% filter(pma!="A") %>% 
+  group_by(entrez,dataset) %>% summarize(rma_median=median(rma,na.rm=TRUE))
+GSE12769_remaining_geneVals <- anti_join(GSE12769_joined, GSE12769_geneVals_filt) %>%
+  group_by(entrez,dataset) %>% summarize(rma_median=median(rma,na.rm=TRUE))
+GSE12769_geneVals <- rbind(GSE12769_geneVals_filt, GSE12769_remaining_geneVals) %>% 
+  arrange(entrez) %>% spread(dataset,rma_median) %>% filter(!is.na(entrez))
+save(GSE12769_geneVals,file="results/GSE12769_geneVals.RData")
+
+## Convert to expression set
+GSE12769_geneVals_eset <- new("ExpressionSet")
+exprs(GSE12769_geneVals_eset) <- as.matrix(GSE12769_geneVals %>% remove_rownames() %>%
+                                             column_to_rownames("entrez"))
+## Use limma to get expression values for each condition
+treatments_table <- read_csv("data/GSE12769.csv", col_types="cc")
+timepoints <- factor(treatments_table[['days']])
+design <- model.matrix(~0+timepoints)
+GSE12769_fit <- lmFit(GSE12769_geneVals_eset,design)
+GSE12769_fit2 <- eBayes(GSE12769_fit)
+contrast_strings <- sapply(levels(timepoints)[2:length(levels(timepoints))],
+                           function(tp) {paste0("timepoints",tp,"-timepoints00")})
+timepoint_strings <- sapply(levels(timepoints), function(tp) {paste0("timepoints",tp)})
+contrast.matrix<-makeContrasts(contrasts=contrast_strings, levels=design)
+GSE12769_fitContrasts_to0<-contrasts.fit(GSE12769_fit,contrast.matrix)
+GSE12769_fitContrasts2_to0<-eBayes(GSE12769_fitContrasts_to0)
+save(GSE12769_fitContrasts2_to0,file="results/GSE12769_fitContrasts2_to0.RData")
+contrast_strings <- sapply(levels(timepoints)[2:length(levels(timepoints))],
+                           function(tp) {paste0("timepoints",tp,"-(timepoints00+timepoints03)/2")})
+timepoint_strings <- sapply(levels(timepoints), function(tp) {paste0("timepoints",tp)})
+contrast.matrix<-makeContrasts(contrasts=contrast_strings, levels=design)
+GSE12769_fitContrasts_toave<-contrasts.fit(GSE12769_fit,contrast.matrix)
+GSE12769_fitContrasts2_toave<-eBayes(GSE12769_fitContrasts_toave)
+save(GSE12769_fitContrasts2_toave,file="results/GSE12769_fitContrasts2_toave.RData")
+
+
+to_norm_all <- GSE12769_fit2$coefficients
+GSE12769_zscores_all <- (to_norm_all-mean(to_norm_all))/sd(to_norm_all)
+to_norm_selected <- GSE12769_fit2$coefficients[,seq(1,6)]
+GSE12769_zscores_selected <- (to_norm_selected-mean(to_norm_selected))/sd(to_norm_selected)
+save(GSE12769_zscores_all,file="results/GSE12769_zscores_all.RData")
+save(GSE12769_zscores_selected,file="results/GSE12769_zscores_selected.RData")
+
+
+# GSE926 (other unsynch dataset, different microarray platform)
+rma_scratch <- as.data.frame(exprs(GSE926_rma_all)) %>% rownames_to_column("probe_name") %>% gather(dataset,rma,2:23)
+pma_scratch <- as.data.frame(GSE926_pma_all) %>% rownames_to_column("probe_name") %>% gather(dataset,pma,2:23)
+en_scratch <- stack(en_GSE926) %>% rename(entrez=values) %>% rename(probe_name=ind) %>%
+  mutate(probe_name=as.character(probe_name))
+GSE926_joined <- left_join(rma_scratch,pma_scratch) %>% left_join(en_scratch) 
+
+# Summarize filtering for non-absent 
+GSE926_geneVals_filt <- GSE926_joined %>% filter(pma!="A") %>% 
+  group_by(entrez,dataset) %>% summarize(rma_median=median(rma,na.rm=TRUE))
+GSE926_remaining_geneVals <- anti_join(GSE926_joined, GSE926_geneVals_filt) %>%
+  group_by(entrez,dataset) %>% summarize(rma_median=median(rma,na.rm=TRUE))
+GSE926_geneVals <- rbind(GSE926_geneVals_filt, GSE926_remaining_geneVals) %>% 
+  arrange(entrez) %>% spread(dataset,rma_median) %>% filter(!is.na(entrez))
+save(GSE926_geneVals,file="results/GSE926_geneVals.RData")
+
+## Convert to expression set
+GSE926_geneVals_eset <- new("ExpressionSet")
+exprs(GSE926_geneVals_eset) <- as.matrix(GSE926_geneVals %>% remove_rownames() %>%
+                                           column_to_rownames("entrez"))
+## Use limma to get expression values for each condition
+treatments_table <- read_csv("data/GSE926.csv", col_types="cc")
+timepoints <- factor(treatments_table[['days']])
+design <- model.matrix(~0+timepoints)
+GSE926_fit <- lmFit(GSE926_geneVals_eset,design)
+GSE926_fit2 <- eBayes(GSE926_fit)
+contrast_strings <- sapply(levels(timepoints)[2:length(levels(timepoints))],
+                           function(tp) {paste0("timepoints",tp,"-timepoints00")})
+timepoint_strings <- sapply(levels(timepoints), function(tp) {paste0("timepoints",tp)})
+contrast.matrix<-makeContrasts(contrasts=contrast_strings, levels=design)
+GSE926_fitContrasts_to0<-contrasts.fit(GSE926_fit,contrast.matrix)
+GSE926_fitContrasts2_to0<-eBayes(GSE926_fitContrasts_to0)
+save(GSE926_fitContrasts2_to0,file="results/GSE926_fitContrasts2_to0.RData")
+contrast_strings <- sapply(levels(timepoints)[2:length(levels(timepoints))],
+                           function(tp) {paste0("timepoints",tp,"-(timepoints00+timepoints03)/2")})
+timepoint_strings <- sapply(levels(timepoints), function(tp) {paste0("timepoints",tp)})
+contrast.matrix<-makeContrasts(contrasts=contrast_strings, levels=design)
+GSE926_fitContrasts_toave<-contrasts.fit(GSE926_fit,contrast.matrix)
+GSE926_fitContrasts2_toave<-eBayes(GSE926_fitContrasts_toave)
+save(GSE926_fitContrasts2_toave,file="results/GSE926_fitContrasts2_toave.RData")
+
+
+to_norm_all <- GSE926_fit2$coefficients
+GSE926_zscores_all <- (to_norm_all-mean(to_norm_all))/sd(to_norm_all)
+to_norm_selected <- GSE926_fit2$coefficients[,seq(1,6)]
+GSE926_zscores_selected <- (to_norm_selected-mean(to_norm_selected))/sd(to_norm_selected)
+save(GSE926_zscores_all,file="results/GSE926_zscores_all.RData")
+save(GSE926_zscores_selected,file="results/GSE926_zscores_selected.RData")
+
+# Merge datasets
+GSE54408_toMerge <- as.data.frame(GSE54408_fitContrasts2$coefficients) %>% rownames_to_column("entrez") 
+names(GSE54408_toMerge)[-1] %<>% paste0("_GSE54408")
+GSE12769_toMerge_to0 <- as.data.frame(GSE12769_fitContrasts2_to0$coefficients) %>% rownames_to_column("entrez") 
+names(GSE12769_toMerge_to0)[-1] %<>% paste0("_GSE12769")
+GSE12769_toMerge_toave <- as.data.frame(GSE12769_fitContrasts2_toave$coefficients) %>% rownames_to_column("entrez") 
+names(GSE12769_toMerge_toave)[-1] %<>% paste0("_GSE12769")
+GSE926_toMerge_to0 <- as.data.frame(GSE926_fitContrasts2_to0$coefficients) %>% rownames_to_column("entrez") 
+names(GSE926_toMerge_to0)[-1] %<>% paste0("_GSE926")
+GSE926_toMerge_toave <- as.data.frame(GSE926_fitContrasts2_toave$coefficients) %>% rownames_to_column("entrez") 
+names(GSE926_toMerge_toave)[-1] %<>% paste0("_GSE926")
+
+limma_merge_to0 <- inner_join(GSE54408_toMerge,GSE12769_toMerge_to0,by="entrez") %>% 
+     inner_join(GSE926_toMerge_to0,by="entrez")
+limma_merge_toave <- inner_join(GSE54408_toMerge,GSE12769_toMerge_toave,by="entrez") %>% 
+     inner_join(GSE926_toMerge_toave,by="entrez")
+save(limma_merge_to0,file='results/limma_merge_to0.RData')
+save(limma_merge_toave,file='results/limma_merge_toave.RData')
+
+
+GSE54408_toMerge <- as.data.frame(GSE54408_zscores_all) %>% rownames_to_column("entrez") 
+names(GSE54408_toMerge)[-1] %<>% paste0("_GSE54408")
+GSE12769_toMerge <- as.data.frame(GSE12769_zscores_all) %>% rownames_to_column("entrez") 
+names(GSE12769_toMerge)[-1] %<>% paste0("_GSE12769")
+GSE926_toMerge <- as.data.frame(GSE926_zscores_all) %>% rownames_to_column("entrez") 
+names(GSE926_toMerge)[-1] %<>% paste0("_GSE926")
+zscore_merge_all <- inner_join(GSE54408_toMerge,GSE12769_toMerge,by="entrez") %>% inner_join(GSE926_toMerge,by="entrez")
+save(zscore_merge_all,file='results/zscore_merge_all.RData')
+
+GSE54408_toMerge <- as.data.frame(GSE54408_zscores_selected) %>% rownames_to_column("entrez") 
+names(GSE54408_toMerge)[-1] %<>% paste0("_GSE54408")
+GSE12769_toMerge <- as.data.frame(GSE12769_zscores_selected) %>% rownames_to_column("entrez") 
+names(GSE12769_toMerge)[-1] %<>% paste0("_GSE12769")
+GSE926_toMerge <- as.data.frame(GSE926_zscores_selected) %>% rownames_to_column("entrez") 
+names(GSE926_toMerge)[-1] %<>% paste0("_GSE926")
+zscore_merge_selected <- inner_join(GSE54408_toMerge,GSE12769_toMerge,by="entrez") %>%
+    inner_join(GSE926_toMerge,by="entrez")
+save(zscore_merge_selected,file='results/zscore_merge_selected.RData')
+
+```
